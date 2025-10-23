@@ -59,7 +59,7 @@ const MorseEntry MORSE_TABLE[] = {
   {"-.-.-.", ';'}, {"-...-", '='}, {".-.-.", '+'}, {"-....-", '-'}, {"..--.-", '_'},
   {".-..-.", '\"'}, {".--.-.", '@'}
 };
-const size_t MORSE_TABLE_SIZE = sizeof(MORSE_TABLE)/sizeof(MORSE_ENTRY);
+const size_t MORSE_TABLE_SIZE = sizeof(MORSE_TABLE) / sizeof(MorseEntry);
 
 // ---------- Helpers ----------
 char decodeMorse(const String& code) {
