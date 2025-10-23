@@ -1,0 +1,42 @@
+/*
+  M14178 38 kHz RX quick test
+  - Wire the receiver's OUT → Arduino digital pin 2
+  - VCC → 5V (or 3.3V per your part), GND → GND
+  - Many demodulating IR receivers pull the output LOW when 38 kHz is present.
+    If yours is active-HIGH, flip the logic noted below.
+
+  Serial output: "receiving" or "no signal", once every 100 ms.
+*/
+
+const uint8_t RX_PIN = 4;           // Receiver output pin
+const unsigned long SAMPLE_PERIOD_MS = 100;   // Print cadence
+const unsigned long DETECT_WINDOW_US = 20000; // How long to look for any LOW pulse (20 ms)
+
+void setup() {
+  Serial.begin(115200);
+  pinMode(RX_PIN, INPUT_PULLUP); // most IR RX modules are open-collector; pull-up keeps it HIGH when idle
+  delay(50);
+  Serial.println("M14178 RX test starting...");
+}
+
+void loop() {
+  unsigned long t0 = millis();
+
+  // Try to catch any "LOW" time from the receiver within 20 ms.
+  // On common 38 kHz IR receivers (e.g., TSOP-style), LOW indicates carrier detected.
+  // pulseIn returns 0 if it times out without seeing the requested level.
+  unsigned long lowPulse = pulseIn(RX_PIN, LOW, DETECT_WINDOW_US);
+
+  bool receiving = (lowPulse > 0UL); // <-- If your RX is active-HIGH, change to: bool receiving = (pulseIn(RX_PIN, HIGH, DETECT_WINDOW_US) > 0UL);
+
+  if (receiving) {
+    Serial.println("receiving");
+  } else {
+    Serial.println("no signal");
+  }
+
+  // Keep total loop period ~100 ms
+  while (millis() - t0 < SAMPLE_PERIOD_MS) {
+    /* spin */
+  }
+}
