@@ -1,0 +1,54 @@
+/*
+  IR Morse Receiver + Decoder + LCD display
+  - RX (demodulated 38 kHz) on D4
+  - LCD I2C: SDA=A4, SCL=A5, address 0x27 (change if needed)
+
+  What it does:
+    * Measures "mark" (carrier present) and "gap" (no carrier) durations
+    * Classifies marks into dot (·) or dash (–)
+    * Uses gap lengths to decide element/letter/word boundaries
+    * Prints raw Morse (e.g., ".-") and decoded char to Serial
+    * Shows decoded text on LCD second line
+
+  Tip: Keep transmitter and receiver UNIT_MS similar (here 120 ms).
+*/
+
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+
+// ---------- Hardware config ----------
+const uint8_t  RX_PIN     = 4;     // demodulated receiver output
+const bool     ACTIVE_LOW = true;  // true: LOW = carrier present (typical TSOP/VS1838)
+
+// ---------- Morse timing (tweak to taste) ----------
+const uint16_t UNIT_MS     = 120;                   // base time unit
+const uint32_t UNIT_US     = (uint32_t)UNIT_MS * 1000UL;
+const uint32_t DOT_MAX_US  = (uint32_t)(1.5 * UNIT_US);  // <= 1.5u => DOT
+const uint32_t INTRA_MAX_US= (uint32_t)(1.5 * UNIT_US);  // <= 1.5u gap => between elements
+const uint32_t LETTER_MIN_US = (uint32_t)(2.5 * UNIT_US);// >= 2.5u gap => letter boundary
+const uint32_t WORD_MIN_US   = (uint32_t)(6.5 * UNIT_US);// >= 6.5u gap => word boundary
+
+// If no edges happen for this long while in gap, finalize a letter
+const uint32_t LETTER_TIMEOUT_US = LETTER_MIN_US;
+
+// ---------- LCD ----------
+LiquidCrystal_I2C lcd(0x27, 16, 2);  // change 0x27 -> 0x3F if needed
+
+// ---------- State for edge timing ----------
+bool prevLevel = false;            // "carrier present" level last loop
+uint32_t lastChangeUs = 0;         // time of last level change (micros)
+String currentSymbol = "";         // accumulating "." and "-" for one letter
+String lineBuffer = "";            // decoded text to show on LCD 2nd line
+
+// ---------- Morse table ----------
+struct MorseEntry { const char* code; char ch; };
+
+const MorseEntry MORSE_TABLE[] = {
+  // Letters
+  {".-", 'A'}, {"-...", 'B'}, {"-.-.", 'C'}, {"-..", 'D'}, {".", 'E'},
+  {"..-.", 'F'}, {"--.", 'G'}, {"....", 'H'}, {"..", 'I'}, {".---", 'J'},
+  {"-.-", 'K'}, {".-..", 'L'}, {"--", 'M'}, {"-.", 'N'}, {"---", 'O'},
+  {".--.", 'P'}, {"--.-", 'Q'}, {".-.", 'R'}, {"...", 'S'}, {"-", 'T'},
+  {"..-", 'U'}, {"...-", 'V'}, {".--", 'W'}, {"-..-", 'X'}, {"-.--", 'Y'}, {"--..", 'Z'},
+  // Digits
+  {"-----", '0'}, {".----", '1'}, {"..---", '2'}, {"...--", '3'}, {
