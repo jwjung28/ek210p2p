@@ -1,36 +1,29 @@
 /*
-  IR Receiver + LCD status test
-  - Receiver OUT -> Arduino D2
-  - Receiver VCC/GND -> 5V/GND (or 3.3V per module)
-  - LCD: I2C (SDA/SCL) -> A4/A5 on UNO/Nano (or SDA/SCL pins on your board)
-  - Behavior: Every 100 ms, print to Serial and show on LCD:
-      "Received" when carrier is detected, else "No signal".
+  IR Receiver (pin 4) + I2C LCD (SDA=A4, SCL=A5) status test
+  - Most 38 kHz IR receivers idle HIGH and go LOW when carrier is present.
+    If yours is opposite, set ACTIVE_LOW = false.
 
-  NOTE on logic: Most 38 kHz IR demodulators idle HIGH and go LOW on carrier.
-                 If yours is opposite, set ACTIVE_LOW = false.
+  LCD address: commonly 0x27 or 0x3F. Change below if needed.
 */
 
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
 
-const uint8_t  RX_PIN             = 2;          // Receiver output pin
-const bool     ACTIVE_LOW         = true;       // true: LOW means carrier present; false: HIGH means present
-const unsigned SAMPLE_PERIOD_MS   = 100;        // overall sample/print cadence
-const unsigned DETECT_WINDOW_US   = 20000;      // look window for any pulse (20 ms)
+const uint8_t  RX_PIN           = 4;          // <-- your receiver on D4
+const bool     ACTIVE_LOW       = true;       // true: LOW means carrier present
+const unsigned SAMPLE_MS        = 100;        // update cadence
+const unsigned DETECT_WIN_US    = 20000;      // look for any pulse within 20 ms
 
-LiquidCrystal_I2C lcd(0x27, 16, 2); // change 0x27 -> 0x3F if your backpack uses 0x3F
+LiquidCrystal_I2C lcd(0x27, 16, 2);           // change 0x27 -> 0x3F if needed
 
-// Track last display to avoid needless LCD writes
 enum SigState { SIG_NONE = 0, SIG_PRESENT = 1 };
 SigState lastShown = SIG_NONE;
 
 void setup() {
   Serial.begin(115200);
 
-  // Receiver input (most modules are open-collector; pull-up helps idle HIGH)
-  pinMode(RX_PIN, INPUT_PULLUP);
+  pinMode(RX_PIN, INPUT_PULLUP);  // many demodulators are open-collector
 
-  // LCD init
   lcd.init();
   lcd.backlight();
   lcd.clear();
@@ -40,24 +33,24 @@ void setup() {
   lcd.print("Initializing...");
 
   delay(200);
-  Serial.println("IR + LCD test starting...");
+  Serial.println("IR + LCD test (RX=D4) starting...");
 }
 
 void loop() {
   unsigned long t0 = millis();
 
-  // Use pulseIn to check for any detection edge within a short window
-  unsigned long width = pulseIn(RX_PIN, ACTIVE_LOW ? LOW : HIGH, DETECT_WINDOW_US);
+  // Detect any “carrier-present” pulse within the short window
+  unsigned long width = pulseIn(RX_PIN, ACTIVE_LOW ? LOW : HIGH, DETECT_WIN_US);
   bool receiving = (width > 0);
 
-  // Serial output (every cycle)
+  // Serial log each cycle
   Serial.println(receiving ? "receiving" : "no signal");
 
-  // LCD update only when the status changes (prevents flicker)
+  // LCD only updates on change to prevent flicker
   SigState now = receiving ? SIG_PRESENT : SIG_NONE;
   if (now != lastShown) {
     lcd.setCursor(0, 0);
-    lcd.print("IR Status:       ");  // pad to clear line
+    lcd.print("IR Status:       ");  // clear line padding
     lcd.setCursor(0, 1);
     if (receiving) {
       lcd.print("Received         ");
@@ -67,6 +60,7 @@ void loop() {
     lastShown = now;
   }
 
-  // Keep loop period ~100 ms
-  while (millis() - t0 < SAMPLE_PERIOD_MS) { /* wait */ }
+  // Hold total loop near 100 ms
+  while (millis() - t0 < SAMPLE_MS) { /* wait */ }
 }
+
