@@ -1,0 +1,59 @@
+// Morse "A" (.-) over 38 kHz IR by gating the carrier
+// Repeats: dot, gap, dash, letter gap, ... (loop)
+// Use a transistor + current-limit resistor for the IR LED.
+
+const uint8_t TX_PIN     = 3;       // any pin supported by tone()
+const uint16_t CARRIER_HZ = 38000;  // 38 kHz for typical IR demodulators
+const uint16_t UNIT_MS    = 120;    // Morse time unit (try 80–150 ms)
+
+void setup() {
+  pinMode(TX_PIN, OUTPUT);
+  // Optional: brief pause before starting
+  delay(500);
+}
+
+void loop() {
+  sendA();
+  // If you want a word gap between repetitions instead of a letter gap,
+  // replace letterGap() in sendA() with wordGap().
+}
+
+// ----- Morse helpers -----
+
+inline void carrierOn()  { tone(TX_PIN, CARRIER_HZ); }
+inline void carrierOff() { noTone(TX_PIN); }
+
+// Element gaps are handled inside these senders to keep code simple.
+void sendDot() {
+  carrierOn();
+  delay(UNIT_MS * 1);     // dot = 1 unit
+  carrierOff();
+  delay(UNIT_MS * 1);     // intra-character gap = 1 unit
+}
+
+void sendDash() {
+  carrierOn();
+  delay(UNIT_MS * 3);     // dash = 3 units
+  carrierOff();
+  delay(UNIT_MS * 1);     // intra-character gap = 1 unit
+}
+
+// After last element of a letter we owe 3 units total letter gap,
+// but each element already ended with 1 unit OFF, so add 2 more.
+void letterGap() {
+  delay(UNIT_MS * 2);
+}
+
+// Word gap is 7 units total; after last element’s 1-unit OFF, add 6 more.
+void wordGap() {
+  delay(UNIT_MS * 6);
+}
+
+// ----- Letters -----
+
+void sendA() {
+  // "A" = .-
+  sendDot();
+  sendDash();
+  letterGap();  // or wordGap() if you want bigger pause between repeats
+}
