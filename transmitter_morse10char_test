@@ -1,0 +1,68 @@
+// Morse TX test: send A..J with 1s silence between letters, repeat
+// 38 kHz carrier gated with tone(); use a transistor + resistor for the IR LED.
+
+const uint8_t  TX_PIN      = 3;        // any pin supported by tone()
+const uint16_t CARRIER_HZ  = 38000;    // 38 kHz for typical IR receivers
+const uint16_t UNIT_MS     = 120;      // Morse time unit (match your receiver)
+
+// A..J Morse patterns
+const char* MORSE_A_TO_J[10] = {
+  ".-",    // A
+  "-...",  // B
+  "-.-.",  // C
+  "-..",   // D
+  ".",     // E
+  "..-.",  // F
+  "--.",   // G
+  "....",  // H
+  "..",    // I
+  ".---"   // J
+};
+
+// ---------- Low-level carrier control ----------
+inline void carrierOn()  { tone(TX_PIN, CARRIER_HZ); }
+inline void carrierOff() { noTone(TX_PIN); }
+
+// ---------- Morse element helpers ----------
+void sendDot() {
+  carrierOn();            delay(UNIT_MS * 1);   // dot ON 1u
+  carrierOff();           delay(UNIT_MS * 1);   // intra-element OFF 1u
+}
+
+void sendDash() {
+  carrierOn();            delay(UNIT_MS * 3);   // dash ON 3u
+  carrierOff();           delay(UNIT_MS * 1);   // intra-element OFF 1u
+}
+
+// End-of-letter gap: total 3u OFF; we already did 1u after last element → add 2u
+void letterGap() { delay(UNIT_MS * 2); }
+
+// Guaranteed silence for a fixed ms (e.g., between letters for your test)
+void silenceMs(uint16_t ms) { carrierOff(); delay(ms); }
+
+// Send a pattern like ".-" or "-..."
+void sendPattern(const char* pattern) {
+  for (const char* p = pattern; *p; ++p) {
+    if (*p == '.') sendDot();
+    else if (*p == '-') sendDash();
+  }
+  letterGap();
+}
+
+void setup() {
+  pinMode(TX_PIN, OUTPUT);
+  carrierOff();
+  Serial.begin(115200);
+  Serial.println("Morse TX A..J with 1s gaps");
+}
+
+void loop() {
+  for (int i = 0; i < 10; ++i) {
+    char letter = 'A' + i;
+    Serial.print("Sending "); Serial.println(letter);
+
+    sendPattern(MORSE_A_TO_J[i]);
+    silenceMs(1000);  // <-- 1 second dark pause between letters
+  }
+  // Loop repeats A..J again
+}
