@@ -51,4 +51,135 @@ const MorseEntry MORSE_TABLE[] = {
   {".--.", 'P'}, {"--.-", 'Q'}, {".-.", 'R'}, {"...", 'S'}, {"-", 'T'},
   {"..-", 'U'}, {"...-", 'V'}, {".--", 'W'}, {"-..-", 'X'}, {"-.--", 'Y'}, {"--..", 'Z'},
   // Digits
-  {"-----", '0'}, {".----", '1'}, {"..---", '2'}, {"...--", '3'}, {
+  {"-----", '0'}, {".----", '1'}, {"..---", '2'}, {"...--", '3'}, {"....-", '4'},
+  {".....", '5'}, {"-....", '6'}, {"--...", '7'}, {"---..", '8'}, {"----.", '9'},
+  // Punctuation (optional examples)
+  {".-.-.-", '.'}, {"--..--", ','}, {"..--..", '?'}, {".----.", '\''}, {"-.-.--", '!'},
+  {"-..-.", '/'}, {"-.--.", '('}, {"-.--.-", ')'}, {".-...", '&'}, {"---...", ':'},
+  {"-.-.-.", ';'}, {"-...-", '='}, {".-.-.", '+'}, {"-....-", '-'}, {"..--.-", '_'},
+  {".-..-.", '\"'}, {".--.-.", '@'}
+};
+const size_t MORSE_TABLE_SIZE = sizeof(MORSE_TABLE)/sizeof(MORSE_ENTRY);
+
+// ---------- Helpers ----------
+char decodeMorse(const String& code) {
+  for (size_t i = 0; i < MORSE_TABLE_SIZE; ++i) {
+    if (code.equals(MORSE_TABLE[i].code)) return MORSE_TABLE[i].ch;
+  }
+  return '?'; // unknown pattern
+}
+
+void appendToLCD(char c) {
+  // Keep a simple 16-char line; scroll left when full
+  if (c == '\n') {
+    lineBuffer = "";
+  } else {
+    lineBuffer += c;
+    if (lineBuffer.length() > 16) {
+      lineBuffer.remove(0, lineBuffer.length() - 16);
+    }
+  }
+  lcd.setCursor(0, 0);
+  lcd.print("Morse RX:       ");
+  lcd.setCursor(0, 1);
+  // pad to clear tail
+  String padded = lineBuffer;
+  while (padded.length() < 16) padded += ' ';
+  lcd.print(padded);
+}
+
+void finishLetter() {
+  if (currentSymbol.length() == 0) return;
+  char ch = decodeMorse(currentSymbol);
+
+  // Serial: show raw code and decoded char
+  Serial.print("Letter: ");
+  Serial.print(currentSymbol);
+  Serial.print(" -> ");
+  Serial.println(ch);
+
+  appendToLCD(ch);
+  currentSymbol = "";
+}
+
+void insertSpace() {
+  // End any in-progress letter first
+  finishLetter();
+  Serial.println("Word gap");
+  appendToLCD(' ');
+}
+
+// ---------- Setup / Loop ----------
+void setup() {
+  Serial.begin(115200);
+
+  pinMode(RX_PIN, INPUT_PULLUP); // for open-collector style receivers
+
+  lcd.init();
+  lcd.backlight();
+  lcd.clear();
+  lcd.setCursor(0, 0); lcd.print("Morse RX:");
+  lcd.setCursor(0, 1); lcd.print("Waiting...      ");
+
+  // Initialize state
+  lastChangeUs = micros();
+  bool raw = digitalRead(RX_PIN);
+  prevLevel = (ACTIVE_LOW ? (raw == LOW) : (raw == HIGH)); // "carrier present" boolean
+
+  Serial.println("Morse IR receiver/decoder ready.");
+  Serial.print("UNIT_MS="); Serial.println(UNIT_MS);
+}
+
+void loop() {
+  const uint32_t nowUs = micros();
+  const bool raw = digitalRead(RX_PIN);
+  const bool level = (ACTIVE_LOW ? (raw == LOW) : (raw == HIGH)); // true = carrier present
+
+  if (level != prevLevel) {
+    // An edge occurred; measure the duration of the previous state
+    const uint32_t durUs = nowUs - lastChangeUs;
+
+    if (prevLevel) {
+      // We were in a MARK (carrier present) -> classify as DOT or DASH
+      if (durUs <= DOT_MAX_US) {
+        currentSymbol += '.';
+        Serial.println("DOT");
+      } else {
+        currentSymbol += '-';
+        Serial.println("DASH");
+      }
+    } else {
+      // We were in a GAP (no carrier)
+      if (durUs >= WORD_MIN_US) {
+        // Word boundary (≥ 7 units)
+        insertSpace();
+      } else if (durUs >= LETTER_MIN_US) {
+        // Letter boundary (≥ 3 units)
+        finishLetter();
+      } else {
+        // Intra-character gap (~1 unit) -> do nothing
+      }
+    }
+
+    // Update edge tracking
+    prevLevel = level;
+    lastChangeUs = nowUs;
+  } else {
+    // No edge; consider timeouts while in GAP to finalize a letter
+    if (!level) { // in GAP
+      const uint32_t gapUs = nowUs - lastChangeUs;
+      if (gapUs >= WORD_MIN_US) {
+        insertSpace();
+        // move the boundary so we don't keep inserting spaces
+        lastChangeUs = nowUs - WORD_MIN_US + LETTER_MIN_US; // nudge to prevent repeats
+      } else if (gapUs >= LETTER_TIMEOUT_US && currentSymbol.length() > 0) {
+        finishLetter();
+        // avoid re-finishing the same letter repeatedly
+        lastChangeUs = nowUs - LETTER_TIMEOUT_US + (UNIT_US / 4);
+      }
+    }
+  }
+
+  // (Optional) small delay to reduce CPU load; keep resolution fine enough for UNIT_MS
+  delay(1);
+}
