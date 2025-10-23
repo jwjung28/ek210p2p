@@ -1,0 +1,13 @@
+// Transmitter: continuous 38 kHz carrier using tone()
+// Connect output pin TX_PIN through a transistor driver to the IR LED.
+
+const uint8_t TX_PIN = 3;  // pick any digital pin supported by tone()
+
+void setup() {
+  pinMode(TX_PIN, OUTPUT);
+  tone(TX_PIN, 38000);     // start continuous 38 kHz
+}
+
+void loop() {
+  // nothing to do; carrier stays on
+}
