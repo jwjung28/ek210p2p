@@ -1,0 +1,171 @@
+// Morse TX (button-driven): type one character via DOT/DASH buttons,
+// end-of-character when idle > 2000 ms, then transmit that character over IR.
+//
+// Hardware:
+// - IR LED driver on TX_PIN (through transistor + resistor) -> 38 kHz via tone()
+// - DOT button to GND on DOT_PIN with INPUT_PULLUP (active LOW)
+// - DASH button to GND on DASH_PIN with INPUT_PULLUP (active LOW)
+
+#include <Arduino.h>
+
+const uint8_t  TX_PIN      = 3;         // same as before (tone() capable)
+const uint16_t CARRIER_HZ  = 38000;     // 38 kHz for typical IR receivers
+const uint16_t UNIT_MS     = 120;       // MUST match your receiver's UNIT_MS
+
+// ---- Buttons (choose any free digital pins on the TX Arduino) ----
+const uint8_t DOT_PIN  = 4;             // 4-pin button for DOT (connect other side to GND)
+const uint8_t DASH_PIN = 5;             // 4-pin button for DASH (connect other side to GND)
+
+// ---- Idle time to finalize a character ----
+const uint32_t END_CHAR_IDLE_MS = 2000; // >2s gap = end of character
+
+// ---- Debounce ----
+const uint16_t DEBOUNCE_MS = 20;
+
+// ---- Morse table for validation (same codes as receiver) ----
+struct MorseEntry { const char* code; char ch; };
+
+const MorseEntry MORSE_TABLE[] = {
+  // Letters
+  {".-", 'A'}, {"-...", 'B'}, {"-.-.", 'C'}, {"-..", 'D'}, {".", 'E'},
+  {"..-.", 'F'}, {"--.", 'G'}, {"....", 'H'}, {"..", 'I'}, {".---", 'J'},
+  {"-.-", 'K'}, {".-..", 'L'}, {"--", 'M'}, {"-.", 'N'}, {"---", 'O'},
+  {".--.", 'P'}, {"--.-", 'Q'}, {".-.", 'R'}, {"...", 'S'}, {"-", 'T'},
+  {"..-", 'U'}, {"...-", 'V'}, {".--", 'W'}, {"-..-", 'X'}, {"-.--", 'Y'}, {"--..", 'Z'},
+  // Digits
+  {"-----", '0'}, {".----", '1'}, {"..---", '2'}, {"...--", '3'}, {"....-", '4'},
+  {".....", '5'}, {"-....", '6'}, {"--...", '7'}, {"---..", '8'}, {"----.", '9'},
+  // Punctuation (optional)
+  {".-.-.-", '.'}, {"--..--", ','}, {"..--..", '?'}, {".----.", '\''}, {"-.-.--", '!'},
+  {"-..-.", '/'}, {"-.--.", '('}, {"-.--.-", ')'}, {".-...", '&'}, {"---...", ':'},
+  {"-.-.-.", ';'}, {"-...-", '='}, {".-.-.", '+'}, {"-....-", '-'}, {"..--.-", '_'},
+  {".-..-.", '\"'}, {".--.-.", '@'}
+};
+const size_t MORSE_TABLE_SIZE = sizeof(MORSE_TABLE) / sizeof(MorseEntry);
+
+// ---------- Low-level carrier control ----------
+inline void carrierOn()  { tone(TX_PIN, CARRIER_HZ); }
+inline void carrierOff() { noTone(TX_PIN); }
+
+// ---------- Morse element helpers ----------
+void sendDot() {
+  carrierOn();            delay(UNIT_MS * 1);   // dot ON 1u
+  carrierOff();           delay(UNIT_MS * 1);   // intra-element OFF 1u
+}
+
+void sendDash() {
+  carrierOn();            delay(UNIT_MS * 3);   // dash ON 3u
+  carrierOff();           delay(UNIT_MS * 1);   // intra-element OFF 1u
+}
+
+// End-of-letter gap: total 3u OFF; we already did 1u after last element → add 2u
+void letterGap() { delay(UNIT_MS * 2); }
+
+// Send a pattern like ".-" or "-..."
+void sendPattern(const char* pattern) {
+  for (const char* p = pattern; *p; ++p) {
+    if (*p == '.')      sendDot();
+    else if (*p == '-') sendDash();
+  }
+  letterGap();
+}
+
+char decodeMorse(const String& code) {
+  for (size_t i = 0; i < MORSE_TABLE_SIZE; ++i) {
+    if (code.equals(MORSE_TABLE[i].code)) return MORSE_TABLE[i].ch;
+  }
+  return '?';
+}
+
+// ---------- Input state ----------
+String currentPattern = "";             // accumulating "." and "-"
+uint32_t lastInputMs   = 0;             // last time we saw a valid press
+
+// Debounce bookkeeping
+bool lastDotLevel  = HIGH;              // with INPUT_PULLUP, HIGH = not pressed
+bool lastDashLevel = HIGH;
+uint32_t lastDotChangeMs  = 0;
+uint32_t lastDashChangeMs = 0;
+
+void setup() {
+  Serial.begin(115200);
+
+  pinMode(TX_PIN, OUTPUT);
+  carrierOff();
+
+  pinMode(DOT_PIN, INPUT_PULLUP);
+  pinMode(DASH_PIN, INPUT_PULLUP);
+
+  lastInputMs = millis();
+
+  Serial.println("Morse TX (button-driven).");
+  Serial.println("Press DOT then DASH etc., idle >2s to send that letter via IR.");
+}
+
+void loop() {
+  const uint32_t now = millis();
+
+  // ---- Read DOT button with debounce (active LOW) ----
+  bool dotLevel = digitalRead(DOT_PIN);
+  if (dotLevel != lastDotLevel) {
+    // potential edge; check debounce
+    if (now - lastDotChangeMs >= DEBOUNCE_MS) {
+      lastDotChangeMs = now;
+      lastDotLevel = dotLevel;
+
+      if (dotLevel == LOW) {  // button pressed
+        currentPattern += '.';
+        lastInputMs = now;
+        Serial.print("DOT -> pattern: ");
+        Serial.println(currentPattern);
+      }
+    }
+  }
+
+  // ---- Read DASH button with debounce (active LOW) ----
+  bool dashLevel = digitalRead(DASH_PIN);
+  if (dashLevel != lastDashLevel) {
+    if (now - lastDashChangeMs >= DEBOUNCE_MS) {
+      lastDashChangeMs = now;
+      lastDashLevel = dashLevel;
+
+      if (dashLevel == LOW) { // button pressed
+        currentPattern += '-';
+        lastInputMs = now;
+        Serial.print("DASH -> pattern: ");
+        Serial.println(currentPattern);
+      }
+    }
+  }
+
+  // ---- End-of-character detection (idle > 2 s) ----
+  if (currentPattern.length() > 0 && (now - lastInputMs) > END_CHAR_IDLE_MS) {
+    // finalize this character
+    char ch = decodeMorse(currentPattern);
+    Serial.print("Finalize: ");
+    Serial.print(currentPattern);
+    Serial.print(" -> ");
+    Serial.println(ch);
+
+    if (ch != '?') {
+      // Valid character: transmit its Morse exactly as typed
+      sendPattern(currentPattern.c_str());
+    } else {
+      // Invalid: notify but do not transmit
+      Serial.println("Unknown pattern; not transmitting.");
+      // short pause to make the failure visually distinct
+      carrierOff();
+      delay(UNIT_MS * 3);
+    }
+
+    // Ready for next character
+    currentPattern = "";
+    // Insert a clean, human-visible gap between characters in case user continues
+    // (not strictly necessary since letterGap() already added 2 units after transmit)
+    // You can add an extra fixed pause if you like:
+    // delay(300);
+  }
+
+  // Small idle delay to avoid busy-waiting
+  delay(2);
+}
