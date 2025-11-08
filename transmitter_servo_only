@@ -1,0 +1,90 @@
+#include <Arduino.h>
+#include <Servo.h>
+
+// ---- Pins ----
+const uint8_t SERVO_PIN       = 9;   // Servo signal
+const uint8_t BTN_LEFT_PIN    = 6;   // 4-pin button to GND (INPUT_PULLUP)
+const uint8_t BTN_RIGHT_PIN   = 7;   // 4-pin button to GND (INPUT_PULLUP)
+
+// ---- Angles ----
+const int START_POS_DEG = 90;        // power-on starting angle (change if you like)
+const int LEFT_DELTA    = -90;       // 90° left from start
+const int RIGHT_DELTA   = +90;       // 90° right from start
+
+// ---- Debounce ----
+const uint16_t DEBOUNCE_MS = 25;
+
+Servo servo;
+int currentPos = START_POS_DEG;
+int leftTarget, rightTarget;
+
+bool lastLeft = HIGH, lastRight = HIGH;
+uint32_t lastLeftChangeMs = 0, lastRightChangeMs = 0;
+
+static inline int clamp(int v, int lo, int hi) { return (v < lo) ? lo : (v > hi) ? hi : v; }
+
+// Optional: smooth motion (set step to 0 for instant jump)
+void goTo(int targetDeg, uint8_t step = 2, uint16_t stepDelayMs = 8) {
+  targetDeg = clamp(targetDeg, 0, 180);
+  if (step == 0) {
+    servo.write(targetDeg);
+    currentPos = targetDeg;
+    return;
+  }
+  if (targetDeg > currentPos) {
+    for (int a = currentPos; a <= targetDeg; a += step) { servo.write(a); delay(stepDelayMs); }
+  } else {
+    for (int a = currentPos; a >= targetDeg; a -= step) { servo.write(a); delay(stepDelayMs); }
+  }
+  currentPos = targetDeg;
+}
+
+void setup() {
+  Serial.begin(115200);
+
+  pinMode(BTN_LEFT_PIN,  INPUT_PULLUP);
+  pinMode(BTN_RIGHT_PIN, INPUT_PULLUP);
+
+  servo.attach(SERVO_PIN);
+
+  // Compute hard targets from the chosen start position
+  leftTarget  = clamp(START_POS_DEG + LEFT_DELTA,  0, 180);  // start - 90
+  rightTarget = clamp(START_POS_DEG + RIGHT_DELTA, 0, 180);  // start + 90
+
+  // Move to starting position on power-up
+  servo.write(START_POS_DEG);
+  currentPos = START_POS_DEG;
+  delay(300);
+
+  Serial.print("Start: "); Serial.print(currentPos);
+  Serial.print(" | Left target: "); Serial.print(leftTarget);
+  Serial.print(" | Right target: "); Serial.println(rightTarget);
+}
+
+void loop() {
+  uint32_t now = millis();
+
+  // ----- LEFT button (active LOW) -----
+  bool leftLevel = digitalRead(BTN_LEFT_PIN);
+  if (leftLevel != lastLeft && (now - lastLeftChangeMs) >= DEBOUNCE_MS) {
+    lastLeftChangeMs = now;
+    lastLeft = leftLevel;
+    if (leftLevel == LOW) {         // pressed
+      Serial.println("LEFT pressed → go to left target");
+      goTo(leftTarget, 2, 8);       // smooth; use step=0 for instant
+    }
+  }
+
+  // ----- RIGHT button (active LOW) -----
+  bool rightLevel = digitalRead(BTN_RIGHT_PIN);
+  if (rightLevel != lastRight && (now - lastRightChangeMs) >= DEBOUNCE_MS) {
+    lastRightChangeMs = now;
+    lastRight = rightLevel;
+    if (rightLevel == LOW) {        // pressed
+      Serial.println("RIGHT pressed → go to right target");
+      goTo(rightTarget, 2, 8);      // smooth; use step=0 for instant
+    }
+  }
+
+  // (No blocking delays otherwise—ready for the next press)
+}
