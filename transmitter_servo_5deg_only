@@ -1,0 +1,69 @@
+#include <Arduino.h>
+#include <Servo.h>
+
+// ---- Pins ----
+const uint8_t SERVO_PIN     = 9;   // Servo signal
+const uint8_t BTN_LEFT_PIN  = 6;   // 4-pin button to GND (INPUT_PULLUP)
+const uint8_t BTN_RIGHT_PIN = 7;   // 4-pin button to GND (INPUT_PULLUP)
+
+// ---- Angles ----
+const int START_POS_DEG = 90;      // power-on starting angle
+const int STEP_DEG      = 5;       // <-- increment per press (±5°)
+const int MIN_DEG       = 0;
+const int MAX_DEG       = 180;
+
+// ---- Debounce ----
+const uint16_t DEBOUNCE_MS = 25;
+
+Servo servo;
+int currentPos = START_POS_DEG;
+
+bool lastLeft = HIGH, lastRight = HIGH;
+uint32_t lastLeftChangeMs = 0, lastRightChangeMs = 0;
+
+static inline int clamp(int v, int lo, int hi) { return (v < lo) ? lo : (v > hi) ? hi : v; }
+
+void setup() {
+  Serial.begin(115200);
+
+  pinMode(BTN_LEFT_PIN,  INPUT_PULLUP);
+  pinMode(BTN_RIGHT_PIN, INPUT_PULLUP);
+
+  servo.attach(SERVO_PIN);
+  currentPos = clamp(START_POS_DEG, MIN_DEG, MAX_DEG);
+  servo.write(currentPos);
+  delay(200);
+
+  Serial.print("Start position: "); Serial.println(currentPos);
+  Serial.println("Press LEFT (-5°) or RIGHT (+5°).");
+}
+
+void loop() {
+  const uint32_t now = millis();
+
+  // ----- LEFT button (active LOW) -----
+  bool leftLevel = digitalRead(BTN_LEFT_PIN);
+  if (leftLevel != lastLeft && (now - lastLeftChangeMs) >= DEBOUNCE_MS) {
+    lastLeftChangeMs = now;
+    lastLeft = leftLevel;
+
+    if (leftLevel == LOW) { // pressed
+      currentPos = clamp(currentPos - STEP_DEG, MIN_DEG, MAX_DEG);
+      servo.write(currentPos);
+      Serial.print("LEFT press → "); Serial.print(currentPos); Serial.println("°");
+    }
+  }
+
+  // ----- RIGHT button (active LOW) -----
+  bool rightLevel = digitalRead(BTN_RIGHT_PIN);
+  if (rightLevel != lastRight && (now - lastRightChangeMs) >= DEBOUNCE_MS) {
+    lastRightChangeMs = now;
+    lastRight = rightLevel;
+
+    if (rightLevel == LOW) { // pressed
+      currentPos = clamp(currentPos + STEP_DEG, MIN_DEG, MAX_DEG);
+      servo.write(currentPos);
+      Serial.print("RIGHT press → "); Serial.print(currentPos); Serial.println("°");
+    }
+  }
+}
