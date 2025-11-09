@@ -1,0 +1,199 @@
+// ===================== Combined: Morse TX (buttons) + Servo Nudge (±5°) =====================
+// IR TX:
+//   - TX_PIN = D3 (tone @ 38 kHz)
+//   - DOT button = D4 (to GND, INPUT_PULLUP) adds '.'
+//   - DASH button = D5 (to GND, INPUT_PULLUP) adds '-'
+//   - Idle > 2000 ms finalizes the character and transmits the exact pattern
+//
+// Servo:
+//   - SERVO_PIN = D9
+//   - LEFT button = D6 (to GND, INPUT_PULLUP) → -5° per press
+//   - RIGHT button = D7 (to GND, INPUT_PULLUP) → +5° per press
+//
+// All grounds must be common. IR LED should be driven via an NPN transistor + series resistor.
+
+#include <Arduino.h>
+#include <Servo.h>
+
+// ---------------- IR / Morse ----------------
+const uint8_t  TX_PIN      = 3;         // tone() capable
+const uint16_t CARRIER_HZ  = 38000;     // 38 kHz for typical IR receivers
+const uint16_t UNIT_MS     = 120;       // MUST match receiver's UNIT_MS
+
+// Morse input buttons
+const uint8_t DOT_PIN      = 4;         // to GND, INPUT_PULLUP
+const uint8_t DASH_PIN     = 5;         // to GND, INPUT_PULLUP
+
+// End-of-character idle gap
+const uint32_t END_CHAR_IDLE_MS = 2000; // >2s => finalize
+
+// Debounce (Morse)
+const uint16_t DEBOUNCE_MS_MORSE = 20;
+
+// Morse table
+struct MorseEntry { const char* code; char ch; };
+const MorseEntry MORSE_TABLE[] = {
+  // Letters
+  {".-", 'A'}, {"-...", 'B'}, {"-.-.", 'C'}, {"-..", 'D'}, {".", 'E'},
+  {"..-.", 'F'}, {"--.", 'G'}, {"....", 'H'}, {"..", 'I'}, {".---", 'J'},
+  {"-.-", 'K'}, {".-..", 'L'}, {"--", 'M'}, {"-.", 'N'}, {"---", 'O'},
+  {".--.", 'P'}, {"--.-", 'Q'}, {".-.", 'R'}, {"...", 'S'}, {"-", 'T'},
+  {"..-", 'U'}, {"...-", 'V'}, {".--", 'W'}, {"-..-", 'X'}, {"-.--", 'Y'}, {"--..", 'Z'},
+  // Digits
+  {"-----", '0'}, {".----", '1'}, {"..---", '2'}, {"...--", '3'}, {"....-", '4'},
+  {".....", '5'}, {"-....", '6'}, {"--...", '7'}, {"---..", '8'}, {"----.", '9'},
+  // Punctuation (optional)
+  {".-.-.-", '.'}, {"--..--", ','}, {"..--..", '?'}, {".----.", '\''}, {"-.-.--", '!'},
+  {"-..-.", '/'}, {"-.--.", '('}, {"-.--.-", ')'}, {".-...", '&'}, {"---...", ':'},
+  {"-.-.-.", ';'}, {"-...-", '='}, {".-.-.", '+'}, {"-....-", '-'}, {"..--.-", '_'},
+  {".-..-.", '\"'}, {".--.-.", '@'}
+};
+const size_t MORSE_TABLE_SIZE = sizeof(MORSE_TABLE) / sizeof(MorseEntry);
+
+// Carrier helpers
+inline void carrierOn()  { tone(TX_PIN, CARRIER_HZ); }
+inline void carrierOff() { noTone(TX_PIN); }
+
+// Morse helpers
+void sendDot()  { carrierOn(); delay(UNIT_MS * 1); carrierOff(); delay(UNIT_MS * 1); }
+void sendDash() { carrierOn(); delay(UNIT_MS * 3); carrierOff(); delay(UNIT_MS * 1); }
+// End-of-letter gap: total 3u OFF; we already did 1u after last element → add 2u
+void letterGap() { delay(UNIT_MS * 2); }
+
+void sendPattern(const char* pattern) {
+  for (const char* p = pattern; *p; ++p) {
+    if (*p == '.')      sendDot();
+    else if (*p == '-') sendDash();
+  }
+  letterGap();
+}
+
+char decodeMorse(const String& code) {
+  for (size_t i = 0; i < MORSE_TABLE_SIZE; ++i) {
+    if (code.equals(MORSE_TABLE[i].code)) return MORSE_TABLE[i].ch;
+  }
+  return '?';
+}
+
+// Morse state
+String   currentPattern = "";
+uint32_t lastInputMs    = 0;
+bool     lastDotLevel   = HIGH, lastDashLevel  = HIGH;
+uint32_t lastDotChangeMs = 0,  lastDashChangeMs = 0;
+
+// ---------------- Servo ----------------
+const uint8_t SERVO_PIN     = 9;   // Servo signal
+const uint8_t BTN_LEFT_PIN  = 6;   // to GND, INPUT_PULLUP
+const uint8_t BTN_RIGHT_PIN = 7;   // to GND, INPUT_PULLUP
+
+const int START_POS_DEG = 90;
+const int STEP_DEG      = 5;       // ±5° per press
+const int MIN_DEG       = 0;
+const int MAX_DEG       = 180;
+
+// Debounce (Servo)
+const uint16_t DEBOUNCE_MS_SERVO = 25;
+
+Servo servo;
+int currentPos = START_POS_DEG;
+bool lastLeft = HIGH, lastRight = HIGH;
+uint32_t lastLeftChangeMs = 0, lastRightChangeMs = 0;
+
+static inline int clamp(int v, int lo, int hi){ return (v<lo)?lo : (v>hi)?hi : v; }
+
+// ---------------- Setup ----------------
+void setup() {
+  Serial.begin(115200);
+
+  // IR/Morse
+  pinMode(TX_PIN, OUTPUT);
+  carrierOff();
+  pinMode(DOT_PIN,  INPUT_PULLUP);
+  pinMode(DASH_PIN, INPUT_PULLUP);
+  lastInputMs = millis();
+
+  // Servo
+  pinMode(BTN_LEFT_PIN,  INPUT_PULLUP);
+  pinMode(BTN_RIGHT_PIN, INPUT_PULLUP);
+  servo.attach(SERVO_PIN);
+  currentPos = clamp(START_POS_DEG, MIN_DEG, MAX_DEG);
+  servo.write(currentPos);
+  delay(200);
+
+  Serial.println("Combined TX ready: DOT=D4, DASH=D5, LEFT=D6 (-5°), RIGHT=D7 (+5°), Servo=D9, IR=D3.");
+}
+
+// ---------------- Loop ----------------
+void loop() {
+  const uint32_t now = millis();
+
+  // ===== Morse: DOT (active LOW) with debounce =====
+  bool dotLevel = digitalRead(DOT_PIN);
+  if (dotLevel != lastDotLevel) {
+    if (now - lastDotChangeMs >= DEBOUNCE_MS_MORSE) {
+      lastDotChangeMs = now;
+      lastDotLevel = dotLevel;
+      if (dotLevel == LOW) {
+        currentPattern += '.';
+        lastInputMs = now;
+        Serial.print("DOT -> pattern: "); Serial.println(currentPattern);
+      }
+    }
+  }
+
+  // ===== Morse: DASH (active LOW) with debounce =====
+  bool dashLevel = digitalRead(DASH_PIN);
+  if (dashLevel != lastDashLevel) {
+    if (now - lastDashChangeMs >= DEBOUNCE_MS_MORSE) {
+      lastDashChangeMs = now;
+      lastDashLevel = dashLevel;
+      if (dashLevel == LOW) {
+        currentPattern += '-';
+        lastInputMs = now;
+        Serial.print("DASH -> pattern: "); Serial.println(currentPattern);
+      }
+    }
+  }
+
+  // ===== Morse: finalize and transmit after idle > 2s =====
+  if (currentPattern.length() > 0 && (now - lastInputMs) > END_CHAR_IDLE_MS) {
+    char ch = decodeMorse(currentPattern);
+    Serial.print("Finalize: "); Serial.print(currentPattern); Serial.print(" -> "); Serial.println(ch);
+
+    if (ch != '?') {
+      sendPattern(currentPattern.c_str());   // transmit exactly what was typed
+    } else {
+      Serial.println("Unknown pattern; not transmitting.");
+      carrierOff();
+      delay(UNIT_MS * 3);
+    }
+    currentPattern = "";
+  }
+
+  // ===== Servo: LEFT (active LOW) one-step-per-press =====
+  bool leftLevel = digitalRead(BTN_LEFT_PIN);
+  if (leftLevel != lastLeft && (now - lastLeftChangeMs) >= DEBOUNCE_MS_SERVO) {
+    lastLeftChangeMs = now;
+    lastLeft = leftLevel;
+    if (leftLevel == LOW) {
+      currentPos = clamp(currentPos - STEP_DEG, MIN_DEG, MAX_DEG);
+      servo.write(currentPos);
+      Serial.print("LEFT press → "); Serial.print(currentPos); Serial.println("°");
+    }
+  }
+
+  // ===== Servo: RIGHT (active LOW) one-step-per-press =====
+  bool rightLevel = digitalRead(BTN_RIGHT_PIN);
+  if (rightLevel != lastRight && (now - lastRightChangeMs) >= DEBOUNCE_MS_SERVO) {
+    lastRightChangeMs = now;
+    lastRight = rightLevel;
+    if (rightLevel == LOW) {
+      currentPos = clamp(currentPos + STEP_DEG, MIN_DEG, MAX_DEG);
+      servo.write(currentPos);
+      Serial.print("RIGHT press → "); Serial.print(currentPos); Serial.println("°");
+    }
+  }
+
+  // small breather
+  delay(2);
+}
