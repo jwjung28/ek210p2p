@@ -1,28 +1,19 @@
-// ===================== Combined: Morse TX (buttons) + Servo Nudge (±5°) =====================
-// IR TX:
-//   - TX_PIN = D3 (tone @ 38 kHz)
-//   - DOT button = D4 (to GND, INPUT_PULLUP) adds '.'
-//   - DASH button = D5 (to GND, INPUT_PULLUP) adds '-'
-//   - Idle > 2000 ms finalizes the character and transmits the exact pattern
-//
-// Servo:
-//   - SERVO_PIN = D9
-//   - LEFT button = D6 (to GND, INPUT_PULLUP) → -5° per press
-//   - RIGHT button = D7 (to GND, INPUT_PULLUP) → +5° per press
-//
-// All grounds must be common. IR LED should be driven via an NPN transistor + series resistor.
+// ==== Combined: Morse TX (buttons) + Servo nudge (±5°) + LCD pattern/char display ====
+// Pins: IR=D3, DOT=D4, DASH=D5, LEFT=D6, RIGHT=D7, SERVO=D9, I2C LCD on SDA=A4/SCL=A5 (0x27)
 
 #include <Arduino.h>
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
 #include <Servo.h>
 
 // ---------------- IR / Morse ----------------
 const uint8_t  TX_PIN      = 3;         // tone() capable
-const uint16_t CARRIER_HZ  = 38000;     // 38 kHz for typical IR receivers
-const uint16_t UNIT_MS     = 120;       // MUST match receiver's UNIT_MS
+const uint16_t CARRIER_HZ  = 38000;     // 38 kHz
+const uint16_t UNIT_MS     = 120;       // match receiver timing
 
-// Morse input buttons
-const uint8_t DOT_PIN      = 4;         // to GND, INPUT_PULLUP
-const uint8_t DASH_PIN     = 5;         // to GND, INPUT_PULLUP
+// Morse input buttons (to GND, INPUT_PULLUP)
+const uint8_t DOT_PIN      = 4;
+const uint8_t DASH_PIN     = 5;
 
 // End-of-character idle gap
 const uint32_t END_CHAR_IDLE_MS = 2000; // >2s => finalize
@@ -41,12 +32,7 @@ const MorseEntry MORSE_TABLE[] = {
   {"..-", 'U'}, {"...-", 'V'}, {".--", 'W'}, {"-..-", 'X'}, {"-.--", 'Y'}, {"--..", 'Z'},
   // Digits
   {"-----", '0'}, {".----", '1'}, {"..---", '2'}, {"...--", '3'}, {"....-", '4'},
-  {".....", '5'}, {"-....", '6'}, {"--...", '7'}, {"---..", '8'}, {"----.", '9'},
-  // Punctuation (optional)
-  {".-.-.-", '.'}, {"--..--", ','}, {"..--..", '?'}, {".----.", '\''}, {"-.-.--", '!'},
-  {"-..-.", '/'}, {"-.--.", '('}, {"-.--.-", ')'}, {".-...", '&'}, {"---...", ':'},
-  {"-.-.-.", ';'}, {"-...-", '='}, {".-.-.", '+'}, {"-....-", '-'}, {"..--.-", '_'},
-  {".-..-.", '\"'}, {".--.-.", '@'}
+  {".....", '5'}, {"-....", '6'}, {"--...", '7'}, {"---..", '8'}, {"----.", '9'}
 };
 const size_t MORSE_TABLE_SIZE = sizeof(MORSE_TABLE) / sizeof(MorseEntry);
 
@@ -80,6 +66,7 @@ String   currentPattern = "";
 uint32_t lastInputMs    = 0;
 bool     lastDotLevel   = HIGH, lastDashLevel  = HIGH;
 uint32_t lastDotChangeMs = 0,  lastDashChangeMs = 0;
+bool     showingFinalChar = false;      // when true, first next press clears screen/pattern
 
 // ---------------- Servo ----------------
 const uint8_t SERVO_PIN     = 9;   // Servo signal
@@ -101,6 +88,34 @@ uint32_t lastLeftChangeMs = 0, lastRightChangeMs = 0;
 
 static inline int clamp(int v, int lo, int hi){ return (v<lo)?lo : (v>hi)?hi : v; }
 
+// ---------------- LCD ----------------
+LiquidCrystal_I2C lcd(0x27, 16, 2); // change to 0x3F if needed
+
+void lcdClearBoth() {
+  lcd.clear();
+  lcd.setCursor(0,0);
+  lcd.print("Morse TX");
+  lcd.setCursor(0,1);
+}
+
+void lcdShowPattern() {
+  // line 1: only the dots/dashes being typed
+  String msg = currentPattern;
+  if (msg.length() > 16) msg = msg.substring(msg.length() - 16);
+  // write padded
+  String pad = msg; while (pad.length() < 16) pad += ' ';
+  lcd.setCursor(0,1); lcd.print(pad);
+}
+
+void lcdShowChar(char ch) {
+  lcd.clear();
+  lcd.setCursor(0,0);
+  lcd.print("Sent:");
+  lcd.setCursor(6,0);
+  lcd.print(ch);
+  // leave second line blank
+}
+
 // ---------------- Setup ----------------
 void setup() {
   Serial.begin(115200);
@@ -118,14 +133,27 @@ void setup() {
   servo.attach(SERVO_PIN);
   currentPos = clamp(START_POS_DEG, MIN_DEG, MAX_DEG);
   servo.write(currentPos);
-  delay(200);
 
-  Serial.println("Combined TX ready: DOT=D4, DASH=D5, LEFT=D6 (-5°), RIGHT=D7 (+5°), Servo=D9, IR=D3.");
+  // LCD
+  lcd.init();
+  lcd.backlight();
+  lcdClearBoth();
+
+  Serial.println("TX ready: DOT=D4, DASH=D5, LEFT=D6, RIGHT=D7, Servo=D9, IR=D3, LCD=0x27.");
 }
 
 // ---------------- Loop ----------------
 void loop() {
   const uint32_t now = millis();
+
+  // If we previously showed a finalized character, clear for new pattern on first new press
+  auto prepareForNewPatternIfNeeded = [&](){
+    if (showingFinalChar) {
+      showingFinalChar = false;
+      currentPattern = "";
+      lcdClearBoth();
+    }
+  };
 
   // ===== Morse: DOT (active LOW) with debounce =====
   bool dotLevel = digitalRead(DOT_PIN);
@@ -134,9 +162,11 @@ void loop() {
       lastDotChangeMs = now;
       lastDotLevel = dotLevel;
       if (dotLevel == LOW) {
+        prepareForNewPatternIfNeeded();
         currentPattern += '.';
         lastInputMs = now;
-        Serial.print("DOT -> pattern: "); Serial.println(currentPattern);
+        Serial.print("DOT -> "); Serial.println(currentPattern);
+        lcdShowPattern();
       }
     }
   }
@@ -148,9 +178,11 @@ void loop() {
       lastDashChangeMs = now;
       lastDashLevel = dashLevel;
       if (dashLevel == LOW) {
+        prepareForNewPatternIfNeeded();
         currentPattern += '-';
         lastInputMs = now;
-        Serial.print("DASH -> pattern: "); Serial.println(currentPattern);
+        Serial.print("DASH -> "); Serial.println(currentPattern);
+        lcdShowPattern();
       }
     }
   }
@@ -160,17 +192,17 @@ void loop() {
     char ch = decodeMorse(currentPattern);
     Serial.print("Finalize: "); Serial.print(currentPattern); Serial.print(" -> "); Serial.println(ch);
 
-    if (ch != '?') {
-      sendPattern(currentPattern.c_str());   // transmit exactly what was typed
-    } else {
-      Serial.println("Unknown pattern; not transmitting.");
-      carrierOff();
-      delay(UNIT_MS * 3);
-    }
+    // Transmit exactly what was typed
+    sendPattern(currentPattern.c_str());
+
+    // After transmit, clear pattern display and show resulting character
+    lcdShowChar(ch);
+    showingFinalChar = true;
+
     currentPattern = "";
   }
 
-  // ===== Servo: LEFT (active LOW) one-step-per-press =====
+  // ===== Servo: LEFT (active LOW) one-step-per-press (no LCD output) =====
   bool leftLevel = digitalRead(BTN_LEFT_PIN);
   if (leftLevel != lastLeft && (now - lastLeftChangeMs) >= DEBOUNCE_MS_SERVO) {
     lastLeftChangeMs = now;
@@ -182,7 +214,7 @@ void loop() {
     }
   }
 
-  // ===== Servo: RIGHT (active LOW) one-step-per-press =====
+  // ===== Servo: RIGHT (active LOW) one-step-per-press (no LCD output) =====
   bool rightLevel = digitalRead(BTN_RIGHT_PIN);
   if (rightLevel != lastRight && (now - lastRightChangeMs) >= DEBOUNCE_MS_SERVO) {
     lastRightChangeMs = now;
@@ -194,6 +226,5 @@ void loop() {
     }
   }
 
-  // small breather
   delay(2);
 }
