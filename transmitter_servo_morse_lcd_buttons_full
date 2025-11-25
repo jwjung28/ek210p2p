@@ -70,7 +70,7 @@ bool     showingFinalChar = false;      // when true, first next press clears sc
 
 // ---------------- Servo ----------------
 const uint8_t SERVO_PIN     = 9;   // Servo signal
-const uint8_t BTN_LEFT_PIN  = 6;   // to GND, INPUT_PULLUP
+const uint8_t BTN_LEFT_PIN  = 10;   // to GND, INPUT_PULLUP
 const uint8_t BTN_RIGHT_PIN = 7;   // to GND, INPUT_PULLUP
 
 const int START_POS_DEG = 90;
