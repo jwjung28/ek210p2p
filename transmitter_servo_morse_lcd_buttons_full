@@ -7,7 +7,7 @@
 #include <Servo.h>
 
 // ---------------- IR / Morse ----------------
-const uint8_t  TX_PIN      = 3;         // tone() capable
+const uint8_t  TX_PIN      = 13;         // tone() capable
 const uint16_t CARRIER_HZ  = 38000;     // 38 kHz
 const uint16_t UNIT_MS     = 120;       // match receiver timing
 
