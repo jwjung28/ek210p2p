@@ -17,7 +17,7 @@
 #include <LiquidCrystal_I2C.h>
 
 // ---------- Hardware config ----------
-const uint8_t  RX_PIN     = 4;     // demodulated receiver output
+const uint8_t  RX_PIN     = A2;     // demodulated receiver output
 const bool     ACTIVE_LOW = true;  // true: LOW = carrier present (typical TSOP/VS1838)
 
 // ---------- Morse timing (tweak to taste) ----------
